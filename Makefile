@@ -8,6 +8,7 @@ PACKAGE_DATE = "2014-12-30"
 
 OBJS = main.o
 
+
 bam2graph: version.h $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS) $(LDFLAGS)
 
@@ -23,3 +24,6 @@ version.h:
 	echo '#define PACKAGE_VERSION "$(PACKAGE_VERSION)"' > $@
 	echo '#define PACKAGE_DATE "$(PACKAGE_DATE)"' >> $@
 
+force:
+
+.PHONY: force
