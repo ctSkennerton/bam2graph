@@ -232,6 +232,7 @@ int main(int argc, char const ** argv)
         }
     
     }
+    g.removeLinks(options.lower, options.upper);
     std::cout << g;
     return 0;
 }
