@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <map>
+#include <vector>
 
 #include <seqan/bam_io.h>
 #include <seqan/sequence.h>
@@ -44,7 +45,7 @@ std::ostream& operator << (std::ostream& os, Graph& g) {
     return os;
 }
 
-int printRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan::BamIndex<seqan::Bai>& baiIndex, seqan::BamHeader& header, seqan::Stream<seqan::Bgzf>& inStream, Graph& g ) {
+int parseRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan::BamIndex<seqan::Bai>& baiIndex, seqan::BamHeader& header, seqan::Stream<seqan::Bgzf>& inStream, Graph& g ) {
     // Jump the BGZF stream to this position.
     bool hasAlignments = false;
     if (!jumpToRegion(inStream, hasAlignments, context, rID, beginPos, endPos, baiIndex))
@@ -81,11 +82,12 @@ int printRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan
     return 0;
 }
 
+
 int main(int argc, char const ** argv)
 {
     if (argc != 4)
     {
-        std::cerr << "USAGE: " << argv[0] << " IN.bam IN.bam.bai REF\n";
+        std::cerr << "USAGE: " << argv[0] << " IN.bam IN.bam.bai Ref_file\n";
         return 1;
     }
 
@@ -118,26 +120,42 @@ int main(int argc, char const ** argv)
         return 1;
     }
 
-    // Translate from reference name to rID.
-    int rID = 0;
-    if (!getIdByName(nameStore, argv[3], rID, nameStoreCache))
-    {
-        std::cerr << "ERROR: Reference sequence named " << argv[3] << " not known.\n";
+    // read the references file
+    std::ifstream refFile(argv[3]);
+    if(!refFile.good()) {
+        std::cerr << "ERROR: cannot open file of references\n";
         return 1;
+    }
+    std::vector<std::string> references;
+    for( std::string line; std::getline( refFile, line ); )
+    {
+        references.push_back(line);
     }
 
     Graph g;
-    // Translate BEGIN and END arguments to number, 1-based to 0-based.
-    int beginPos = 0, endPos = 499;
-    if(printRegion(rID, beginPos, endPos, context, baiIndex, header, inStream, g ) != 0)
-    {
-        return 1;
-    }
-    beginPos = header.sequenceInfos[rID].i2 - 500;
-    endPos   = header.sequenceInfos[rID].i2;
-    if(printRegion(rID, beginPos, endPos, context, baiIndex, header, inStream, g) != 0)
-    {
-        return 1;
+    std::vector<std::string>::iterator iter;
+    for(iter = references.begin(); iter != references.end(); iter++) {
+        // Translate from reference name to rID.
+        int rID = 0;
+        if (!getIdByName(nameStore, *iter, rID, nameStoreCache))
+        {
+            std::cerr << "ERROR: Reference sequence named " << argv[3] << " not known.\n";
+            return 1;
+        }
+
+        // Translate BEGIN and END arguments to number, 1-based to 0-based.
+        int beginPos = 0, endPos = 499;
+        if(parseRegion(rID, beginPos, endPos, context, baiIndex, header, inStream, g ) != 0)
+        {
+            return 1;
+        }
+        beginPos = header.sequenceInfos[rID].i2 - 500;
+        endPos   = header.sequenceInfos[rID].i2;
+        if(parseRegion(rID, beginPos, endPos, context, baiIndex, header, inStream, g) != 0)
+        {
+            return 1;
+        }
+    
     }
     std::cout << g;
     return 0;
