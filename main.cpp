@@ -6,6 +6,9 @@
 #include <seqan/bam_io.h>
 #include <seqan/sequence.h>
 #include <seqan/stream.h>
+#include <seqan/arg_parse.h>
+
+#include "version.h"
 
 // graph typedefs - the cargo is information for the edges
 
@@ -14,9 +17,21 @@ typedef seqan::StringSet<seqan::CharString> TNameStore;
 typedef seqan::NameStoreCache<TNameStore>   TNameStoreCache;
 typedef seqan::BamIOContext<TNameStore>     TBamIOContext;
 
+struct Options {
+    int upper;
+    int lower;
+    seqan::CharString bamFile;
+    seqan::CharString baiIndexFile;
+    seqan::CharString referenceFile;
+
+    Options() : upper(-1), lower(3)
+    {}
+};
+
 class Graph {
     public:
         void addLink(seqan::String<char> id1, seqan::String<char> id2);
+        void removeLinks(int lower = 3, int upper = -1);
     private:
         std::map<std::pair<seqan::String<char>, seqan::String<char> >, int > adjacency_list;
 
@@ -34,6 +49,26 @@ void Graph::addLink(seqan::String<char> id1, seqan::String<char> id2) {
         adjacency_list[key] = 1;
     } else {
         adjacency_list[key] += 1;
+    }
+}
+
+void Graph::removeLinks(int lower, int upper) {
+    std::map<std::pair<seqan::String<char>, seqan::String<char> >, int >::iterator iter;
+    for (iter = adjacency_list.begin(); iter != adjacency_list.end();) {
+        if (lower >= 0) {
+            if(iter->second < lower) {
+                adjacency_list.erase(iter++);
+                continue;
+            }
+        }
+
+        if (upper >= 0) {
+            if(iter->second > upper) {
+                adjacency_list.erase(iter++);
+                continue;
+            }
+        }
+        ++iter;
     }
 }
 
@@ -82,28 +117,68 @@ int parseRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan
     return 0;
 }
 
+seqan::ArgumentParser::ParseResult
+parseCommandLine(Options& opts, int argc, char const ** argv) {
+    // Setup ArgumentParser.
+    seqan::ArgumentParser parser("bam2graph");
+    seqan::setVersion(parser, PACKAGE_VERSION);
+    seqan::setDate(parser, PACKAGE_DATE);
+
+    seqan::addOption(parser, seqan::ArgParseOption( "l", "lower", "Lower coverage bound for the number of links between to contigs", seqan::ArgParseArgument::INTEGER, "INT")); 
+    seqan::setDefaultValue(parser, "lower", "3");
+    seqan::addOption(parser, seqan::ArgParseOption( "u", "upper", "Upper coverage bound for the number of links between to contigs", seqan::ArgParseArgument::INTEGER, "INT"));
+    seqan::setDefaultValue(parser, "upper", "-1");
+    seqan::addOption(parser, seqan::ArgParseOption( "b", "bam", "Bam file", seqan::ArgParseArgument::INPUTFILE, "FILE"));
+    seqan::setRequired(parser, "bam");
+    seqan::addOption(parser, seqan::ArgParseOption( "B", "bai", "Index file", seqan::ArgParseArgument::INPUTFILE, "FILE"));
+    seqan::setRequired(parser, "bai");
+    seqan::addOption(parser, seqan::ArgParseOption( "r", "ref-seqs", "Contigs to look for", seqan::ArgParseArgument::INPUTFILE, "FILE"));
+    seqan::setRequired(parser, "ref-seqs");
+
+
+    // Parse command line.
+    seqan::ArgumentParser::ParseResult res = seqan::parse(parser, argc, argv);
+
+    // If parsing was not successful then exit with code 1 if there were errors.
+    // Otherwise, exit with code 0 (e.g. help was printed).
+    if (res != seqan::ArgumentParser::PARSE_OK)
+        return res;
+
+    //extract option values
+    seqan::getOptionValue(opts.lower, parser, "lower");
+    seqan::getOptionValue(opts.upper, parser, "upper");
+    seqan::getOptionValue(opts.bamFile, parser, "bam");
+    seqan::getOptionValue(opts.baiIndexFile, parser, "bai");
+    seqan::getOptionValue(opts.referenceFile, parser, "ref-seqs");
+
+    return seqan::ArgumentParser::PARSE_OK;
+}
+
 
 int main(int argc, char const ** argv)
 {
-    if (argc != 4)
-    {
-        std::cerr << "USAGE: " << argv[0] << " IN.bam IN.bam.bai Ref_file\n";
-        return 1;
-    }
+    
+    Options options;
+    seqan::ArgumentParser::ParseResult res = parseCommandLine(options, argc, argv);
+
+    // If parsing was not successful then exit with code 1 if there were errors.
+    // Otherwise, exit with code 0 (e.g. help was printed).
+    if (res != seqan::ArgumentParser::PARSE_OK)
+        return res == seqan::ArgumentParser::PARSE_ERROR;
 
     // Open BGZF Stream for reading.
     seqan::Stream<seqan::Bgzf> inStream;
-    if (!open(inStream, argv[1], "r"))
+    if (!open(inStream, seqan::toCString(options.bamFile), "r"))
     {
-        std::cerr << "ERROR: Could not open " << argv[1] << " for reading.\n";
+        std::cerr << "ERROR: Could not open " << options.bamFile << " for reading.\n";
         return 1;
     }
 
     // Read BAI index.
     seqan::BamIndex<seqan::Bai> baiIndex;
-    if (read(baiIndex, argv[2]) != 0)
+    if (read(baiIndex, seqan::toCString(options.baiIndexFile)) != 0)
     {
-        std::cerr << "ERROR: Could not read BAI index file " << argv[2] << "\n";
+        std::cerr << "ERROR: Could not read BAI index file " << options.baiIndexFile << "\n";
         return 1;
     }
 
@@ -116,12 +191,12 @@ int main(int argc, char const ** argv)
     seqan::BamHeader header;
     if (readRecord(header, context, inStream, seqan::Bam()) != 0)
     {
-        std::cerr << "ERROR: Could not read header from BAM file " << argv[1] << "\n";
+        std::cerr << "ERROR: Could not read header from BAM file " << options.bamFile << "\n";
         return 1;
     }
 
     // read the references file
-    std::ifstream refFile(argv[3]);
+    std::ifstream refFile(seqan::toCString(options.referenceFile));
     if(!refFile.good()) {
         std::cerr << "ERROR: cannot open file of references\n";
         return 1;
@@ -139,7 +214,7 @@ int main(int argc, char const ** argv)
         int rID = 0;
         if (!getIdByName(nameStore, *iter, rID, nameStoreCache))
         {
-            std::cerr << "ERROR: Reference sequence named " << argv[3] << " not known.\n";
+            std::cerr << "ERROR: Reference sequence named " << *iter << " not known.\n";
             return 1;
         }
 
