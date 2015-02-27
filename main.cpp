@@ -16,11 +16,12 @@ typedef seqan::FormattedFileContext<seqan::BamFileIn, void>::Type TBamContext;
 struct Options {
     int upper;
     int lower;
+    int endLength;
     seqan::CharString bamFile;
     seqan::CharString baiIndexFile;
     seqan::CharString referenceFile;
 
-    Options() : upper(-1), lower(3)
+    Options() : upper(-1), lower(3), endLength(500)
     {}
 };
 enum ContigEnd_t {ContigStart, ContigEnd};
@@ -157,6 +158,8 @@ parseCommandLine(Options& opts, int argc, char const ** argv) {
     seqan::setDefaultValue(parser, "lower", "3");
     seqan::addOption(parser, seqan::ArgParseOption( "u", "upper", "Upper coverage bound for the number of links between to contigs", seqan::ArgParseArgument::INTEGER, "INT"));
     seqan::setDefaultValue(parser, "upper", "-1");
+    seqan::addOption(parser, seqan::ArgParseOption( "e", "end-length", "The length from either side of the contig to search for links", seqan::ArgParseArgument::INTEGER, "INT"));
+    seqan::setDefaultValue(parser, "end-length", "500");
     seqan::addOption(parser, seqan::ArgParseOption( "b", "bam", "Bam file", seqan::ArgParseArgument::INPUT_FILE, "FILE"));
     seqan::setRequired(parser, "bam");
     seqan::addOption(parser, seqan::ArgParseOption( "B", "bai", "Index file", seqan::ArgParseArgument::INPUT_FILE, "FILE"));
@@ -179,6 +182,7 @@ parseCommandLine(Options& opts, int argc, char const ** argv) {
     seqan::getOptionValue(opts.bamFile, parser, "bam");
     seqan::getOptionValue(opts.baiIndexFile, parser, "bai");
     seqan::getOptionValue(opts.referenceFile, parser, "ref-seqs");
+    seqan::getOptionValue(opts.endLength, parser, "end-length");
 
     return seqan::ArgumentParser::PARSE_OK;
 }
@@ -226,6 +230,7 @@ int main(int argc, char const ** argv)
     Graph g;
     std::vector<std::string>::iterator iter;
     for(iter = references.begin(); iter != references.end(); iter++) {
+
         // Translate from reference name to rID.
         int rID = 0;
         if (!getIdByName(rID, seqan::contigNamesCache(seqan::context(input_bam)), *iter))
@@ -235,12 +240,12 @@ int main(int argc, char const ** argv)
         }
 
         // Translate BEGIN and END arguments to number, 1-based to 0-based.
-        int beginPos = 0, endPos = 499;
+        int beginPos = 0, endPos = options.endLength - 1;
         if(parseRegion(rID, beginPos, endPos, bamContext, baiIndex, input_bam, g ) != 0)
         {
             return 1;
         }
-        beginPos = seqan::contigLengths(bamContext)[rID] - 500;
+        beginPos = seqan::contigLengths(bamContext)[rID] - options.endLength;
         endPos   = seqan::contigLengths(bamContext)[rID];
         if(parseRegion(rID, beginPos, endPos, bamContext, baiIndex, input_bam, g) != 0)
         {
