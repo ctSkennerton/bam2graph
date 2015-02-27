@@ -10,12 +10,8 @@
 
 #include "version.h"
 
-// graph typedefs - the cargo is information for the edges
+typedef seqan::FormattedFileContext<seqan::BamFileIn, void>::Type TBamContext;
 
-// typedefs for the bam files
-typedef seqan::StringSet<seqan::CharString> TNameStore;
-typedef seqan::NameStoreCache<TNameStore>   TNameStoreCache;
-typedef seqan::BamIOContext<TNameStore>     TBamIOContext;
 
 struct Options {
     int upper;
@@ -27,23 +23,26 @@ struct Options {
     Options() : upper(-1), lower(3)
     {}
 };
+enum ContigEnd_t {ContigStart, ContigEnd};
+typedef std::pair<std::pair<seqan::String<char>,ContigEnd_t>, std::pair<seqan::String<char>,ContigEnd_t> > MappingKey_t;
+typedef std::map<MappingKey_t, int> Mapping_t;
 
 class Graph {
     public:
-        void addLink(seqan::String<char> id1, seqan::String<char> id2);
+        void addLink(seqan::String<char> id1, seqan::String<char> id2, ContigEnd_t e1, ContigEnd_t e2);
         void removeLinks(int lower = 3, int upper = -1);
     private:
-        std::map<std::pair<seqan::String<char>, seqan::String<char> >, int > adjacency_list;
+        Mapping_t adjacency_list;
 
         friend std::ostream& operator<<(std::ostream& os, Graph& g);
 
 };
-void Graph::addLink(seqan::String<char> id1, seqan::String<char> id2) {
-    std::pair<seqan::String<char>, seqan::String<char> > key;
+void Graph::addLink(seqan::String<char> id1, seqan::String<char> id2, ContigEnd_t e1, ContigEnd_t e2) {
+    MappingKey_t key;
     if( id1 < id2) {
-        key = std::make_pair(id1,id2);
+        key = std::make_pair(std::make_pair(id1,e1), std::make_pair(id2,e2));
     } else {
-        key = std::make_pair(id2,id1);
+        key = std::make_pair(std::make_pair(id2,e2), std::make_pair(id1, e1));
     }
     if(adjacency_list.find(key) == adjacency_list.end()) {
         adjacency_list[key] = 1;
@@ -53,7 +52,7 @@ void Graph::addLink(seqan::String<char> id1, seqan::String<char> id2) {
 }
 
 void Graph::removeLinks(int lower, int upper) {
-    std::map<std::pair<seqan::String<char>, seqan::String<char> >, int >::iterator iter;
+    Mapping_t::iterator iter;
     for (iter = adjacency_list.begin(); iter != adjacency_list.end();) {
         if (lower >= 0) {
             if(iter->second < lower) {
@@ -73,17 +72,32 @@ void Graph::removeLinks(int lower, int upper) {
 }
 
 std::ostream& operator << (std::ostream& os, Graph& g) {
-    std::map<std::pair<seqan::String<char>, seqan::String<char> >, int >::iterator iter;
+    Mapping_t::iterator iter;
     for(iter = g.adjacency_list.begin(); iter != g.adjacency_list.end(); ++iter) {
-        os <<iter->first.first<<"\t"<<iter->first.second<<"\t"<<iter->second<<std::endl;
+
+        os <<iter->first.first.first<<"\t"<<iter->first.second.first;
+        os<<"\t"<<iter->second<<"\t";
+        // first contig joined at begining or end?
+        if(iter->first.first.second == ContigStart) {
+            os << "start ";//"<-- ";
+        } else {
+            os << "end ";//"--> ";
+        }
+
+        if(iter->first.second.second == ContigStart) {
+            os << "start";//"<--";
+        } else {
+            os << "end";//"-->";
+        }
+        os <<std::endl;
     }
     return os;
 }
 
-int parseRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan::BamIndex<seqan::Bai>& baiIndex, seqan::BamHeader& header, seqan::Stream<seqan::Bgzf>& inStream, Graph& g ) {
+int parseRegion(int rID, int beginPos, int endPos, TBamContext const & context, seqan::BamIndex<seqan::Bai>& baiIndex, seqan::BamFileIn& inStream, Graph& g ) {
     // Jump the BGZF stream to this position.
     bool hasAlignments = false;
-    if (!jumpToRegion(inStream, hasAlignments, context, rID, beginPos, endPos, baiIndex))
+    if (!jumpToRegion(inStream, hasAlignments, rID, beginPos, endPos, baiIndex))
     {
         //std::cerr << "ERROR: Could not jump to " << argv[3] << ":" << beginPos << "\n";
         return 1;
@@ -95,11 +109,7 @@ int parseRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan
     seqan::BamAlignmentRecord record;
     while (!atEnd(inStream) )
     {
-        if (readRecord(record, context, inStream, seqan::Bam()) != 0)
-        {
-            std::cerr << "ERROR: Could not read record from BAM file.\n";
-            return 1;
-        }
+        readRecord(record, inStream );
 
         // If we are on the next reference or at the end already then we stop.
         if (record.rID == -1 || record.rID != rID || record.beginPos >= endPos)
@@ -110,8 +120,27 @@ int parseRegion(int rID, int beginPos, int endPos, TBamIOContext& context, seqan
 
         // make sure that the mate is not on the contig
         if(record.rID != record.rNextId && record.rNextId != -1) {
-            // Otherwise, we add it to the graph.
-            g.addLink(header.sequenceInfos[record.rID].i1, header.sequenceInfos[record.rNextId].i1);
+            // now check to see if we are mapping to an end of the other contig with that mate
+            ContigEnd_t e1, e2;
+            if(record.pNext < 500) {
+                // maps to the begging of the contig
+                e2 = ContigStart;
+            } else if (record.pNext > seqan::contigLengths(context)[record.rNextId] - 500) {
+                // maps to the end of the contig
+                e2 = ContigEnd;
+            } else {
+                continue;
+            }
+
+            if(beginPos == 0) {
+                // beggining of this contig
+                e1 = ContigStart;
+            } else {
+                // end of this contig
+                e1 = ContigEnd;
+            }
+            // add it to the graph.
+            g.addLink(seqan::contigNames(context)[rID], seqan::contigNames(context)[record.rNextId], e1, e2);
         }
     }
     return 0;
@@ -128,11 +157,11 @@ parseCommandLine(Options& opts, int argc, char const ** argv) {
     seqan::setDefaultValue(parser, "lower", "3");
     seqan::addOption(parser, seqan::ArgParseOption( "u", "upper", "Upper coverage bound for the number of links between to contigs", seqan::ArgParseArgument::INTEGER, "INT"));
     seqan::setDefaultValue(parser, "upper", "-1");
-    seqan::addOption(parser, seqan::ArgParseOption( "b", "bam", "Bam file", seqan::ArgParseArgument::INPUTFILE, "FILE"));
+    seqan::addOption(parser, seqan::ArgParseOption( "b", "bam", "Bam file", seqan::ArgParseArgument::INPUT_FILE, "FILE"));
     seqan::setRequired(parser, "bam");
-    seqan::addOption(parser, seqan::ArgParseOption( "B", "bai", "Index file", seqan::ArgParseArgument::INPUTFILE, "FILE"));
+    seqan::addOption(parser, seqan::ArgParseOption( "B", "bai", "Index file", seqan::ArgParseArgument::INPUT_FILE, "FILE"));
     seqan::setRequired(parser, "bai");
-    seqan::addOption(parser, seqan::ArgParseOption( "r", "ref-seqs", "Contigs to look for", seqan::ArgParseArgument::INPUTFILE, "FILE"));
+    seqan::addOption(parser, seqan::ArgParseOption( "r", "ref-seqs", "Contigs to look for", seqan::ArgParseArgument::INPUT_FILE, "FILE"));
     seqan::setRequired(parser, "ref-seqs");
 
 
@@ -166,34 +195,21 @@ int main(int argc, char const ** argv)
     if (res != seqan::ArgumentParser::PARSE_OK)
         return res == seqan::ArgumentParser::PARSE_ERROR;
 
-    // Open BGZF Stream for reading.
-    seqan::Stream<seqan::Bgzf> inStream;
-    if (!open(inStream, seqan::toCString(options.bamFile), "r"))
-    {
-        std::cerr << "ERROR: Could not open " << options.bamFile << " for reading.\n";
-        return 1;
-    }
-
+    // Open Bam file for reading.
+    seqan::BamFileIn input_bam(seqan::toCString(options.bamFile));
     // Read BAI index.
     seqan::BamIndex<seqan::Bai> baiIndex;
-    if (read(baiIndex, seqan::toCString(options.baiIndexFile)) != 0)
+    if (!open(baiIndex, seqan::toCString(options.baiIndexFile)))
     {
         std::cerr << "ERROR: Could not read BAI index file " << options.baiIndexFile << "\n";
         return 1;
     }
 
-    // Setup name store, cache, and BAM I/O context.
-    TNameStore      nameStore;
-    TNameStoreCache nameStoreCache(nameStore);
-    TBamIOContext   context(nameStore, nameStoreCache);
-
-    // Read header.
     seqan::BamHeader header;
-    if (readRecord(header, context, inStream, seqan::Bam()) != 0)
-    {
-        std::cerr << "ERROR: Could not read header from BAM file " << options.bamFile << "\n";
-        return 1;
-    }
+    seqan::readHeader(header, input_bam);
+
+    // get the contig names and lengths from the bam file
+    TBamContext const & bamContext = context(input_bam);
 
     // read the references file
     std::ifstream refFile(seqan::toCString(options.referenceFile));
@@ -212,7 +228,7 @@ int main(int argc, char const ** argv)
     for(iter = references.begin(); iter != references.end(); iter++) {
         // Translate from reference name to rID.
         int rID = 0;
-        if (!getIdByName(nameStore, *iter, rID, nameStoreCache))
+        if (!getIdByName(rID, seqan::contigNamesCache(seqan::context(input_bam)), *iter))
         {
             std::cerr << "ERROR: Reference sequence named " << *iter << " not known.\n";
             return 1;
@@ -220,13 +236,13 @@ int main(int argc, char const ** argv)
 
         // Translate BEGIN and END arguments to number, 1-based to 0-based.
         int beginPos = 0, endPos = 499;
-        if(parseRegion(rID, beginPos, endPos, context, baiIndex, header, inStream, g ) != 0)
+        if(parseRegion(rID, beginPos, endPos, bamContext, baiIndex, input_bam, g ) != 0)
         {
             return 1;
         }
-        beginPos = header.sequenceInfos[rID].i2 - 500;
-        endPos   = header.sequenceInfos[rID].i2;
-        if(parseRegion(rID, beginPos, endPos, context, baiIndex, header, inStream, g) != 0)
+        beginPos = seqan::contigLengths(bamContext)[rID] - 500;
+        endPos   = seqan::contigLengths(bamContext)[rID];
+        if(parseRegion(rID, beginPos, endPos, bamContext, baiIndex, input_bam, g) != 0)
         {
             return 1;
         }
